@@ -19,28 +19,12 @@ import (
 func main() {
 	var port = flag.Int("port", 8080, "http server port")
 	flag.Parse()
-	fmt.Println(*port)
 
 	peerConnectionMapChan := make(map[string]chan *webrtc.TrackLocalStaticRTP)
 	peerConnectionMap := make(map[string][]*webrtc.TrackLocalStaticRTP)
 
 	peerConnectionConfig := webrtc.Configuration{
-		ICEServers: []webrtc.ICEServer{
-			{
-				URLs: []string{
-					"stun:stun.l.google.com:19302",
-					// "stun:stun.l.google.com:5349",
-					// "stun:stun1.l.google.com:3478",
-					// "stun:stun1.l.google.com:5349",
-					// "stun:stun2.l.google.com:19302",
-					// "stun:stun2.l.google.com:5349",
-					// "stun:stun3.l.google.com:3478",
-					// "stun:stun3.l.google.com:5349",
-					// "stun:stun4.l.google.com:19302",
-					// "stun:stun4.l.google.com:5349",
-				},
-			},
-		},
+		ICEServers: []webrtc.ICEServer{{URLs: []string{"stun:stun.l.google.com:19302"}}},
 	}
 
 	mediaEngine := &webrtc.MediaEngine{}
@@ -185,9 +169,9 @@ func main() {
 		} else {
 			currentTracks := peerConnectionMap[room]
 			if currentTracks == nil {
-				oneTrack := <-currentChan
-				twoTrack := <-currentChan
-				currentTracks = []*webrtc.TrackLocalStaticRTP{oneTrack, twoTrack}
+				firstTrack := <-currentChan
+				secondTrack := <-currentChan
+				currentTracks = []*webrtc.TrackLocalStaticRTP{firstTrack, secondTrack}
 				peerConnectionMap[room] = currentTracks
 			}
 			rtpSender, err := peerConnection.AddTrack(currentTracks[0])
@@ -231,6 +215,18 @@ func main() {
 			c.String(http.StatusOK, result)
 		}
 
+	})
+
+	r.GET("/interlocutor", func(c *gin.Context) {
+		keys := make([]string, len(peerConnectionMapChan))
+
+		i := 0
+		for k := range peerConnectionMapChan {
+			keys[i] = k
+			i++
+		}
+
+		c.JSON(http.StatusOK, keys)
 	})
 
 	r.Run(fmt.Sprintf(":%d", *port))

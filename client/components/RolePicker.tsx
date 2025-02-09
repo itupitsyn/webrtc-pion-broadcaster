@@ -5,9 +5,10 @@ import { FC, useState } from "react";
 import { Broadcaster } from "./Broadcaster";
 import { Watcher } from "./Watcher";
 import { clearLog } from "@/utils";
+import { Meet } from "./Meet";
 
 export const RolePicker: FC = () => {
-  const [role, setRole] = useState<"watching" | "streaming" | null>(null);
+  const [role, setRole] = useState<"watching" | "streaming" | "meet" | null>(null);
   return (
     <div className="flex flex-col gap-4">
       {!role && (
@@ -17,6 +18,9 @@ export const RolePicker: FC = () => {
           </Button>
           <Button gradientDuoTone="purpleToBlue" outline onClick={() => setRole("watching")}>
             Watching
+          </Button>
+          <Button gradientDuoTone="purpleToBlue" outline onClick={() => setRole("meet")}>
+            Meet
           </Button>
         </ButtonGroup>
       )}
@@ -30,6 +34,14 @@ export const RolePicker: FC = () => {
       )}
       {role === "watching" && (
         <Watcher
+          onBackClick={() => {
+            clearLog();
+            setRole(null);
+          }}
+        />
+      )}
+      {role === "meet" && (
+        <Meet
           onBackClick={() => {
             clearLog();
             setRole(null);
