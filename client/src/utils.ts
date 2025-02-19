@@ -43,3 +43,20 @@ export const clearLog = () => {
     elem.innerHTML = "";
   }
 };
+
+export const ping = (ip: string) => {
+  return new Promise<boolean>((resolve) => {
+    const img = new Image();
+    img.onload = function () {
+      resolve(true);
+    };
+    img.onerror = function () {
+      resolve(true);
+    };
+    img.src = "http://" + ip;
+
+    setTimeout(function () {
+      resolve(false);
+    }, 1500);
+  });
+};

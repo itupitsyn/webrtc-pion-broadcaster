@@ -1,5 +1,6 @@
 import { useBroadcaster } from "@/hooks/useBroadcaster";
 import { useWatcher } from "@/hooks/useWatcher";
+import { log } from "@/src/utils";
 import axios from "axios";
 import { Button, TextInput } from "flowbite-react";
 import { FC, useEffect, useRef, useState } from "react";
@@ -11,13 +12,12 @@ type MeetProps = {
 
 export const Meet: FC<MeetProps> = ({ onBackClick }) => {
   const [name, setName] = useState("");
-  const [interlocutor, setInterlocutor] = useState("");
 
   const senderRef = useRef<HTMLVideoElement>(null);
   const receiverRef = useRef<HTMLVideoElement>(null);
 
-  const { startBroadcasting, stopBroadcasting, isBroadcasting } = useBroadcaster(senderRef, name);
-  const { startWatching, stopWatching, isWatching } = useWatcher(receiverRef, interlocutor);
+  const { startBroadcasting, stopBroadcasting, isBroadcasting } = useBroadcaster(senderRef);
+  const { startWatching, stopWatching, isWatching } = useWatcher(receiverRef);
   const [tickTack, setTickTack] = useState(false);
 
   useEffect(() => {
@@ -38,8 +38,8 @@ export const Meet: FC<MeetProps> = ({ onBackClick }) => {
               setTickTack((prev) => !prev);
             }, 1000);
           } else {
-            setInterlocutor(interlocutorName);
-            setTimeout(startWatching);
+            log(`start watching ${interlocutorName}`);
+            startWatching(interlocutorName);
           }
         }
       } catch {
@@ -52,7 +52,9 @@ export const Meet: FC<MeetProps> = ({ onBackClick }) => {
     return () => {
       clearTimeout(tmtId);
     };
-  }, [isBroadcasting, isWatching, name, startWatching, tickTack]);
+  }, [isBroadcasting, isWatching, name, tickTack, startWatching]);
+
+  // console.log({ isBroadcasting, isWatching });
 
   return (
     <>
@@ -86,15 +88,28 @@ export const Meet: FC<MeetProps> = ({ onBackClick }) => {
             Disconnect
           </Button>
         ) : (
-          <Button gradientDuoTone="purpleToBlue" onClick={startBroadcasting}>
+          <Button gradientDuoTone="purpleToBlue" onClick={() => startBroadcasting(name)}>
             Call
           </Button>
         )}
       </div>
 
-      <div className="flex flex-wrap gap-6">
-        <video ref={senderRef} width="640" height="480" autoPlay muted className="w-[640px] max-w-full" />
-        <video ref={receiverRef} width="640" height="480" autoPlay className="w-[640px] max-w-full" />
+      <div className="flex flex-col items-center gap-6">
+        <video
+          ref={senderRef}
+          width="640"
+          height="480"
+          autoPlay
+          muted
+          className="max-h-[300px] w-[640px] max-w-full sm:max-h-[480px]"
+        />
+        <video
+          ref={receiverRef}
+          width="640"
+          height="480"
+          autoPlay
+          className="max-h-[300px] w-[640px] max-w-full sm:max-h-[480px]"
+        />
       </div>
     </>
   );

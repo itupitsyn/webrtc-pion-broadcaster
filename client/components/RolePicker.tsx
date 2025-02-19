@@ -4,7 +4,7 @@ import { Button, ButtonGroup } from "flowbite-react";
 import { FC, useState } from "react";
 import { Broadcaster } from "./Broadcaster";
 import { Watcher } from "./Watcher";
-import { clearLog } from "@/utils";
+import { clearLog } from "@/src/utils";
 import { Meet } from "./Meet";
 
 export const RolePicker: FC = () => {

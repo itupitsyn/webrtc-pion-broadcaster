@@ -12,7 +12,7 @@ export const Watcher: FC<WatcherProps> = ({ onBackClick }) => {
   const [room, setRoom] = useState("");
   const ref = useRef<HTMLVideoElement>(null);
 
-  const { startWatching, stopWatching, isWatching } = useWatcher(ref, room);
+  const { startWatching, stopWatching, isWatching } = useWatcher(ref);
 
   return (
     <>
@@ -28,7 +28,7 @@ export const Watcher: FC<WatcherProps> = ({ onBackClick }) => {
           Back
         </Button>
         <TextInput className="grow" value={room} onChange={(e) => setRoom(e.target.value)} />
-        <Button gradientDuoTone="purpleToBlue" onClick={startWatching}>
+        <Button gradientDuoTone="purpleToBlue" onClick={() => startWatching(room)}>
           Watch
         </Button>
         {isWatching && (
@@ -38,7 +38,7 @@ export const Watcher: FC<WatcherProps> = ({ onBackClick }) => {
         )}
       </div>
 
-      <video ref={ref} width="640" height="480" autoPlay></video>
+      <video ref={ref} width="640" height="480" autoPlay className="max-h-[300px] sm:max-h-[480px]" />
     </>
   );
 };

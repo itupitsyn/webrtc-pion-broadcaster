@@ -32,6 +32,9 @@ func main() {
 		fmt.Println(err)
 	}
 
+	settingEngine := webrtc.SettingEngine{}
+	settingEngine.SetNetworkTypes([]webrtc.NetworkType{webrtc.NetworkTypeUDP4})
+
 	interceptorRegistry := &interceptor.Registry{}
 
 	if err := webrtc.RegisterDefaultInterceptors(mediaEngine, interceptorRegistry); err != nil {
@@ -45,6 +48,7 @@ func main() {
 	interceptorRegistry.Add(intervalPliFactory)
 
 	api := webrtc.NewAPI(
+		webrtc.WithSettingEngine(settingEngine),
 		webrtc.WithMediaEngine(mediaEngine),
 		webrtc.WithInterceptorRegistry(interceptorRegistry),
 	)
@@ -67,11 +71,6 @@ func main() {
 		if err != nil {
 			fmt.Println(err)
 		}
-		// defer func() {
-		// 	if cErr := peerConnection.Close(); cErr != nil {
-		// 		fmt.Printf("cannot close peerConnection: %v\n", cErr)
-		// 	}
-		// }()
 
 		currentChan, exists := peerConnectionMapChan[room]
 		if exists && isCaster {
@@ -92,13 +91,8 @@ func main() {
 			peerConnection.OnTrack(func(remoteTrack *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
 				localTrack, newTrackErr := webrtc.NewTrackLocalStaticRTP(remoteTrack.Codec().RTPCodecCapability, remoteTrack.Codec().MimeType, "pion")
 				if newTrackErr != nil {
-					fmt.Println(newTrackErr)
-
-					delete(peerConnectionMapChan, room)
-					delete(peerConnectionMap, room)
-					if cErr := peerConnection.Close(); cErr != nil {
-						fmt.Printf("cannot close peerConnection: %v\n", cErr)
-					}
+					fmt.Println("New track error")
+					processError(peerConnectionMapChan, peerConnectionMap, peerConnection, room, newTrackErr)
 					return
 				}
 				if existingChan, ok := peerConnectionMapChan[room]; ok {
@@ -113,24 +107,14 @@ func main() {
 				for {
 					i, _, readErr := remoteTrack.Read(rtpBuf)
 					if readErr != nil {
-						fmt.Println(readErr)
-
-						delete(peerConnectionMapChan, room)
-						delete(peerConnectionMap, room)
-						if cErr := peerConnection.Close(); cErr != nil {
-							fmt.Printf("cannot close peerConnection: %v\n", cErr)
-						}
+						fmt.Println("Reading remote track error")
+						processError(peerConnectionMapChan, peerConnectionMap, peerConnection, room, readErr)
 						return
 					}
 
 					if _, err = localTrack.Write(rtpBuf[:i]); err != nil && !errors.Is(err, io.ErrClosedPipe) {
-						fmt.Println(err)
-
-						delete(peerConnectionMapChan, room)
-						delete(peerConnectionMap, room)
-						if cErr := peerConnection.Close(); cErr != nil {
-							fmt.Printf("cannot close peerConnection: %v\n", cErr)
-						}
+						fmt.Println("Writing remote track error")
+						processError(peerConnectionMapChan, peerConnectionMap, peerConnection, room, err)
 						return
 					}
 				}
@@ -169,37 +153,48 @@ func main() {
 		} else {
 			currentTracks := peerConnectionMap[room]
 			if currentTracks == nil {
-				firstTrack := <-currentChan
-				secondTrack := <-currentChan
-				currentTracks = []*webrtc.TrackLocalStaticRTP{firstTrack, secondTrack}
-				peerConnectionMap[room] = currentTracks
-			}
-			rtpSender, err := peerConnection.AddTrack(currentTracks[0])
-			if err != nil {
-				fmt.Println(err)
-			}
-			rtpSender, err = peerConnection.AddTrack(currentTracks[1])
-			if err != nil {
-				fmt.Println(err)
-			}
+				currentTracks = []*webrtc.TrackLocalStaticRTP{}
 
-			go func() {
-				rtcpBuf := make([]byte, 1500)
-				for {
-					if _, _, rtcpErr := rtpSender.Read(rtcpBuf); rtcpErr != nil {
-						return
+				for i := 0; i < 2; i++ {
+					select {
+					case track, ok := <-currentChan:
+						if ok {
+							rtpSender, err := peerConnection.AddTrack(track)
+							if err != nil {
+								fmt.Println(err)
+								c.Error(err)
+							}
+							currentTracks = append(currentTracks, track)
+
+							go func() {
+								rtcpBuf := make([]byte, 1500)
+								for {
+									if _, _, rtcpErr := rtpSender.Read(rtcpBuf); rtcpErr != nil {
+										fmt.Println(rtcpErr)
+										return
+									}
+								}
+							}()
+						} else {
+							fmt.Println("track channel closed")
+						}
+					default:
+						fmt.Println("no track 1")
 					}
 				}
-			}()
+				peerConnectionMap[room] = currentTracks
+			}
 
 			err = peerConnection.SetRemoteDescription(offer)
 			if err != nil {
 				fmt.Println(err)
+				c.Error(err)
 			}
 
 			answer, err := peerConnection.CreateAnswer(nil)
 			if err != nil {
 				fmt.Println(err)
+				c.Error(err)
 			}
 
 			gatherComplete := webrtc.GatheringCompletePromise(peerConnection)
@@ -207,6 +202,7 @@ func main() {
 			err = peerConnection.SetLocalDescription(answer)
 			if err != nil {
 				fmt.Println(err)
+				c.Error(err)
 			}
 
 			<-gatherComplete
@@ -257,7 +253,7 @@ func CORSMiddleware() gin.HandlerFunc {
 		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
 		c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
 		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With")
-		c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS, GET, PUT")
+		c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS, GET, PUT, PATCH, DELETE")
 
 		if c.Request.Method == "OPTIONS" {
 			c.AbortWithStatus(204)
@@ -265,5 +261,15 @@ func CORSMiddleware() gin.HandlerFunc {
 		}
 
 		c.Next()
+	}
+}
+
+func processError(pcmc map[string]chan *webrtc.TrackLocalStaticRTP, pcm map[string][]*webrtc.TrackLocalStaticRTP, pc *webrtc.PeerConnection, room string, err error) {
+	fmt.Println(err)
+
+	delete(pcmc, room)
+	delete(pcm, room)
+	if cErr := pc.Close(); cErr != nil {
+		fmt.Printf("cannot close peerConnection: %v\n", cErr)
 	}
 }
