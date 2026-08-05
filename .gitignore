@@ -1,0 +1,7 @@
+# Secrets and deployment-specific values
+.env
+
+# Local infrastructure, not part of this project's deployment
+traefik/
+
+.claude

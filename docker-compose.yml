@@ -1,0 +1,93 @@
+# The whole call stack: SFU, browser front end, TURN server.
+#
+#   cp .env.example .env      # then fill it in
+#   docker compose build
+#   docker compose up -d
+#
+# The browser reaches both halves by domain name. Getting there is the reverse
+# proxy's job and its configuration lives outside this repository: this file only
+# publishes the HTTP ports for the proxy to forward to, over the LAN.
+#
+# Media is WebRTC over UDP and never passes through an HTTP proxy: it goes
+# straight to MEDIA_UDP_PORT below, so that port must be open on the firewall
+# and forwarded one-to-one if this host is behind a router.
+
+services:
+  sfu:
+    build:
+      context: ./server
+    image: webrtc-sfu:latest
+    container_name: webrtc-sfu
+    restart: unless-stopped
+    command:
+      - -allowed-origins=https://${APP_DOMAIN}
+      # A hostname is fine: the SFU resolves it at startup, because an ICE
+      # candidate has to carry an address rather than a name.
+      - -public-address=${PUBLIC_ADDRESS:-${SFU_DOMAIN}}
+      - -udp-port=${MEDIA_UDP_PORT:-7881}
+      # Empty means "not configured". A publicly reachable SFU works without
+      # either of these for most clients; see the README before adding them.
+      - -stun=${STUN_URL:-}
+      - -turn=${TURN_URL:-}
+      - -turn-secret=${TURN_SECRET:-}
+    environment:
+      # Empty by default. Set PION_LOG_DEBUG=ice (or =all) in .env to make the
+      # ICE agent report every packet it drops and why — the only way to see
+      # from the inside why connectivity checks that provably arrive get no
+      # answer. Noisy; turn it back off once the question is settled.
+      PION_LOG_DEBUG: ${PION_LOG_DEBUG:-}
+    # Docker's embedded resolver forwards to whatever the host uses, so a host
+    # behind a split-horizon or filtering resolver answers NXDOMAIN for
+    # SFU_DOMAIN and the SFU refuses to start. Uncomment to resolve against
+    # public DNS instead — or set PUBLIC_ADDRESS in .env and skip DNS entirely.
+    # dns:
+    #   - 1.1.1.1
+    #   - 8.8.8.8
+    ports:
+      # Signaling: HTTP + websocket.
+      - "${SFU_HTTP_PORT:-8080}:8080"
+      # Media. Not proxied, not optional.
+      - "${MEDIA_UDP_PORT:-7881}:${MEDIA_UDP_PORT:-7881}/udp"
+
+  web:
+    build:
+      context: ./client
+      args:
+        # Baked into the bundle at build time. Changing it requires a rebuild.
+        NEXT_PUBLIC_SFU_URL: https://${SFU_DOMAIN}
+    image: webrtc-web:latest
+    container_name: webrtc-web
+    restart: unless-stopped
+    depends_on:
+      - sfu
+    ports:
+      - "${WEB_HTTP_PORT:-3300}:3000"
+
+  coturn:
+    image: coturn/coturn:4.6-alpine
+    container_name: webrtc-coturn
+    restart: unless-stopped
+    # Off by default. Start it with `docker compose --profile turn up -d` once
+    # you have someone who cannot connect without a relay.
+    profiles: ["turn"]
+    # Host networking on purpose: a relay needs a wide UDP range and the real
+    # client source addresses. Publishing thousands of ports through the bridge
+    # is impractical and NAT would hide the addresses coturn has to see.
+    network_mode: host
+    command:
+      - --listening-port=3478
+      - --realm=${TURN_DOMAIN}
+      # Credentials are derived from this secret by the SFU and expire on their
+      # own, so no per-user accounts and no permanent passwords in the bundle.
+      - --use-auth-secret
+      - --static-auth-secret=${TURN_SECRET}
+      - --min-port=${TURN_MIN_PORT:-49160}
+      - --max-port=${TURN_MAX_PORT:-49200}
+      # Unlike the SFU, coturn wants a literal address here — it does not resolve
+      # names. Use PUBLIC/PRIVATE if this host holds a private address behind
+      # NAT, e.g. --external-ip=203.0.113.10/10.0.0.5
+      - --external-ip=${TURN_EXTERNAL_IP}
+      - --no-cli
+      - --no-tls
+      - --no-dtls
+      - --log-file=stdout
