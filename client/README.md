@@ -58,6 +58,32 @@ hidden. A denied permission is not retried, since asking for less will not chang
 Participants with no camera show a placeholder tile and are still heard; their `<video>` element
 stays mounted because that is what plays their audio.
 
+### Per-participant volume
+
+Each remote tile carries its own volume slider and a mute button, like Discord or TeamSpeak. Both are
+purely local: they set `volume` and `muted` on that participant's `<video>` element, nothing is
+signalled, and the person being turned down is never told. The slider is squared before it reaches
+the element — a linear one crams every useful step into its bottom third, because perceived loudness
+rises much more slowly than amplitude.
+
+The control is hidden on the local preview, which plays nothing by design, and on participants who
+joined without a microphone, who have nothing to turn down.
+
+The slider runs to 200%, and how it gets there is the interesting part. A media element's `volume`
+stops at 1, so anything past 100% has to go through WebAudio: the stream is fed to a `GainNode` and a
+limiter (`source → gain → limiter → destination`), and the element is muted while that graph plays.
+Two things shape the implementation:
+
+- **The graph is built on the first boost and never before it.** A `MediaStreamAudioSourceNode` fed by
+  a _remote_ stream has a long history of yielding silence on Safari and iOS, so a call that leaves
+  the slider alone touches no `AudioContext` at all. If building it does fail, the slider caps itself
+  at 100% and says so — a quiet participant, not a silent one.
+- **The element stays attached to the stream, just muted.** Chrome has never reliably delivered remote
+  audio to WebAudio from a stream that is not also attached to a live media element.
+
+The limiter is not decoration: 200% is +12 dB, which would tear on an already loud speaker.
+One `AudioContext` is shared by the whole page, since browsers cap how many a document may hold.
+
 ### Testing from another device
 
 `getUserMedia` is only available in a secure context, so a plain `http://192.168.x.x:3000` page
