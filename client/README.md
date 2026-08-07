@@ -28,6 +28,24 @@ Your name is remembered in `localStorage` and pre-filled next time. It is sent o
 socket, never in the URL, and the server broadcasts the room roster so everyone sees everyone else's
 name on their tile.
 
+### Room links
+
+Every room has an address of its own — `/r/<room>` — and **Copy link** in the call header puts it on
+the clipboard. Opening one lands on the join form with the room already filled in and the cursor in
+the name field, so with a remembered name joining is a single click. The link carries the room name
+and nothing else: no identity, no token, so it is exactly as secret as the room name is.
+
+Joining from `/` rewrites the address to the room's own through `history.replaceState`, and leaving
+puts it back to `/`. Deliberately not a router navigation — that would remount the page and tear down
+the call that had just started.
+
+Only a tab that has actually been in a call cleans the address up on the way out. A link that was
+just opened keeps its room in the bar until you join or leave the page, because scrubbing it there
+would lose the room on the next reload.
+
+Nothing about a room exists on the server until someone is in it, so a link works before the room
+does; the first person through it creates the room by joining.
+
 ### Configuration
 
 `NEXT_PUBLIC_*` values are inlined into the client bundle **at build time**, so in a

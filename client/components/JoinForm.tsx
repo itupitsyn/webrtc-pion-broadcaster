@@ -7,11 +7,13 @@ const NAME_STORAGE_KEY = "webrtc-broadcaster:name";
 
 interface JoinFormProps {
   busy: boolean;
+  /** Set when the room came from the URL; still editable, since the link may be wrong. */
+  initialRoom?: string;
   onJoin: (room: string, name: string) => void;
 }
 
-export function JoinForm({ busy, onJoin }: JoinFormProps) {
-  const [room, setRoom] = useState("");
+export function JoinForm({ busy, initialRoom = "", onJoin }: JoinFormProps) {
+  const [room, setRoom] = useState(initialRoom);
   const [name, setName] = useState("");
 
   // Read after mount, not during render: localStorage does not exist on the
@@ -45,6 +47,8 @@ export function JoinForm({ busy, onJoin }: JoinFormProps) {
         autoComplete="nickname"
         maxLength={MAX_NAME_LENGTH}
         disabled={busy}
+        // Arriving through a link, the name is the only thing left to fill in.
+        autoFocus={initialRoom !== ""}
         className={field}
       />
 
