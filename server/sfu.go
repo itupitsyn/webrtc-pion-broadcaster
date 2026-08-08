@@ -126,7 +126,11 @@ func NewSFU(cfg Config) (*SFU, error) {
 		),
 		cfg: cfg,
 	}
-	if cfg.STUNURL != "" {
+	// STUN is for a server that does not know its own address. One with a 1:1
+	// mapping already does, and asking anyway is worse than useless: a relay on
+	// the same LAN answers through hairpin NAT with a private address, which then
+	// goes out as a candidate no browser can reach and every browser tries.
+	if cfg.STUNURL != "" && cfg.NATIP == "" {
 		sfu.serverICEServers = []webrtc.ICEServer{{URLs: []string{cfg.STUNURL}}}
 	}
 
