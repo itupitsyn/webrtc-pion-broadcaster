@@ -10,7 +10,7 @@ import {
   type Welcome,
 } from "./signaling";
 
-export type CallStatus = "idle" | "connecting" | "connected" | "error";
+export type CallStatus = "idle" | "connecting" | "reconnecting" | "connected" | "error";
 
 export interface RemotePeer {
   /** The SFU uses the participant id as the MediaStream id. */
@@ -18,12 +18,21 @@ export interface RemotePeer {
   stream: MediaStream;
 }
 
+/** Backoff between reconnection attempts, capped so a long outage still retries often. */
+const RETRY_BASE_MS = 1000;
+const RETRY_MAX_MS = 10000;
+
 /**
  * useCall drives one participant's side of a call.
  *
  * The SFU is always the offerer, so this side only ever answers. That is what
  * makes people joining and leaving mid-call work: the server re-offers whenever
  * the set of forwarded tracks changes, and there is no glare to resolve.
+ *
+ * A dropped connection is retried rather than fatal. The server keeps no session
+ * to resume, so reconnecting means rejoining the same room under a new id — but
+ * the camera is never released and the call view never goes away, so from the
+ * inside it is a stall rather than an ejection.
  */
 export function useCall() {
   const [status, setStatus] = useState<CallStatus>("idle");
@@ -35,6 +44,8 @@ export function useCall() {
   const [remotes, setRemotes] = useState<RemotePeer[]>([]);
   const [micEnabled, setMicEnabled] = useState(true);
   const [camEnabled, setCamEnabled] = useState(true);
+  /** Consecutive failed attempts, so the UI can say more than "wait". */
+  const [attempt, setAttempt] = useState(0);
   /** Display names by participant id, as last broadcast by the server. */
   const [names, setNames] = useState<Record<string, string>>({});
   const [myName, setMyName] = useState("");
@@ -42,6 +53,14 @@ export function useCall() {
   const wsRef = useRef<WebSocket | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
+
+  // What a reconnection needs to know: which room, under what name, and whether
+  // the user has since walked away.
+  const roomRef = useRef<string | null>(null);
+  const nameRef = useRef("");
+  const leftRef = useRef(false);
+  const attemptRef = useRef(0);
+  const retryTimer = useRef<ReturnType<typeof setTimeout>>();
 
   // Candidates can arrive before the offer they belong to has been applied.
   const pendingCandidates = useRef<RTCIceCandidateInit[]>([]);
@@ -52,6 +71,9 @@ export function useCall() {
   // corrupts the negotiation.
   const queue = useRef<Promise<void>>(Promise.resolve());
 
+  // openSession and scheduleReconnect call each other; a ref breaks the cycle.
+  const reconnect = useRef<() => void>();
+
   const send = useCallback((event: string, data: unknown) => {
     const ws = wsRef.current;
     if (ws?.readyState === WebSocket.OPEN) {
@@ -59,27 +81,51 @@ export function useCall() {
     }
   }, []);
 
-  const teardown = useCallback(() => {
-    wsRef.current?.close();
+  /**
+   * Drops the signaling session and everything negotiated through it, keeping the
+   * local media. This is what a reconnection tears down; the camera staying on is
+   * the difference between a stall and being thrown out.
+   */
+  const closeSession = useCallback(() => {
+    const ws = wsRef.current;
     wsRef.current = null;
+    if (ws) {
+      // Cleared first: this close is ours, and must not look like a lost socket.
+      ws.onclose = null;
+      ws.onerror = null;
+      ws.onmessage = null;
+      ws.close();
+    }
 
     pcRef.current?.close();
     pcRef.current = null;
-
-    localStreamRef.current?.getTracks().forEach((track) => track.stop());
-    localStreamRef.current = null;
 
     pendingCandidates.current = [];
     remoteDescriptionSet.current = false;
     queue.current = Promise.resolve();
 
-    setLocalStream(null);
+    // The streams behind these belong to the old peer connection and are dead.
     setRemotes([]);
-    setRoom(null);
     setNames({});
   }, []);
 
+  const teardown = useCallback(() => {
+    clearTimeout(retryTimer.current);
+    closeSession();
+
+    localStreamRef.current?.getTracks().forEach((track) => track.stop());
+    localStreamRef.current = null;
+
+    roomRef.current = null;
+    attemptRef.current = 0;
+
+    setLocalStream(null);
+    setRoom(null);
+    setAttempt(0);
+  }, [closeSession]);
+
   const leave = useCallback(() => {
+    leftRef.current = true;
     teardown();
     setStatus("idle");
     setError(null);
@@ -112,7 +158,12 @@ export function useCall() {
     (welcome: Welcome) => {
       // Tolerate a missing list: the constructor throws on null rather than
       // treating it as "no ICE servers", which is a hard failure this early.
-      const pc = new RTCPeerConnection({ iceServers: welcome.iceServers ?? [] });
+      const pc = new RTCPeerConnection({
+        iceServers: welcome.iceServers ?? [],
+        // ?relay=1 refuses every direct path, which is the only way to prove the
+        // TURN server actually works — otherwise a direct connection hides it.
+        iceTransportPolicy: relayOnly() ? "relay" : "all",
+      });
 
       // The server's offer carries recvonly transceivers; these local tracks are
       // what attach to them when we answer, so they must be added up front.
@@ -128,11 +179,15 @@ export function useCall() {
 
         switch (pc.connectionState) {
           case "connected":
+            attemptRef.current = 0;
+            setAttempt(0);
+            setError(null);
             setStatus("connected");
             break;
           case "failed":
-            setError("Media connection failed. A TURN server is usually needed across restrictive networks.");
-            setStatus("error");
+            // Media never came up. The socket may be perfectly fine, so nothing
+            // else would notice; retry the whole session rather than sit there.
+            reconnect.current?.();
             break;
         }
       };
@@ -203,6 +258,85 @@ export function useCall() {
     [applyOffer, createPeerConnection],
   );
 
+  /** Opens a signaling session for the room already in roomRef. */
+  const openSession = useCallback(() => {
+    const name = roomRef.current;
+    if (!name || leftRef.current) return;
+
+    const ws = new WebSocket(signalingURL(name));
+    wsRef.current = ws;
+
+    ws.onopen = () => {
+      // Announced over the socket rather than in the URL, so a display name
+      // never lands in a query string or an access log.
+      send("identify", { name: nameRef.current });
+    };
+
+    ws.onmessage = (event) => {
+      let msg: SignalMessage;
+      try {
+        msg = JSON.parse(event.data as string) as SignalMessage;
+      } catch {
+        return;
+      }
+
+      queue.current = queue.current
+        .then(() => handleMessage(msg))
+        .catch((handlingError: unknown) => {
+          console.error("signaling failed", handlingError);
+          // Negotiation is broken; a fresh session is the only way back.
+          reconnect.current?.();
+        });
+    };
+
+    ws.onerror = () => {
+      // The event carries no detail; onclose reports whether we ever connected.
+      console.error("signaling socket error");
+    };
+
+    ws.onclose = () => {
+      // Ignore the close that our own teardown caused.
+      if (wsRef.current !== ws) return;
+      reconnect.current?.();
+    };
+  }, [handleMessage, send]);
+
+  /**
+   * Drops the broken session and opens a fresh one after a backoff. Retries
+   * indefinitely: a call worth having is worth waiting out a lift or a train
+   * tunnel, and the user can always leave.
+   */
+  const scheduleReconnect = useCallback(() => {
+    if (leftRef.current || !roomRef.current) return;
+
+    closeSession();
+    clearTimeout(retryTimer.current);
+
+    attemptRef.current += 1;
+    setAttempt(attemptRef.current);
+    setStatus("reconnecting");
+
+    const delay = Math.min(RETRY_BASE_MS * 2 ** (attemptRef.current - 1), RETRY_MAX_MS);
+    retryTimer.current = setTimeout(openSession, delay);
+  }, [closeSession, openSession]);
+
+  useEffect(() => {
+    reconnect.current = scheduleReconnect;
+  }, [scheduleReconnect]);
+
+  // A machine that just regained its network should not sit out the rest of the
+  // backoff it accumulated while offline.
+  useEffect(() => {
+    const retryNow = () => {
+      if (!roomRef.current || leftRef.current || wsRef.current) return;
+      clearTimeout(retryTimer.current);
+      openSession();
+    };
+
+    window.addEventListener("online", retryNow);
+    return () => window.removeEventListener("online", retryNow);
+  }, [openSession]);
+
   const join = useCallback(
     async (roomName: string, displayName: string) => {
       const name = roomName.trim();
@@ -243,47 +377,23 @@ export function useCall() {
       setRoom(name);
       setMyName(displayName.trim());
 
-      const ws = new WebSocket(signalingURL(name));
-      wsRef.current = ws;
+      leftRef.current = false;
+      attemptRef.current = 0;
+      setAttempt(0);
+      roomRef.current = name;
+      nameRef.current = displayName.trim();
 
-      ws.onopen = () => {
-        // Announced over the socket rather than in the URL, so a display name
-        // never lands in a query string or an access log.
-        send("identify", { name: displayName.trim() });
-      };
-
-      ws.onmessage = (event) => {
-        let msg: SignalMessage;
-        try {
-          msg = JSON.parse(event.data as string) as SignalMessage;
-        } catch {
-          return;
-        }
-
-        queue.current = queue.current
-          .then(() => handleMessage(msg))
-          .catch((handlingError: unknown) => {
-            console.error("signaling failed", handlingError);
-            setError(handlingError instanceof Error ? handlingError.message : "Signaling failed");
-            setStatus("error");
-          });
-      };
-
-      ws.onerror = () => {
-        // The event carries no detail; onclose reports whether we ever connected.
-        console.error("signaling socket error");
-      };
-
-      ws.onclose = () => {
-        // Ignore the close that our own teardown caused.
-        if (wsRef.current !== ws) return;
-
-        teardown();
-        setStatus((current) => (current === "error" ? current : "idle"));
-      };
+      openSession();
     },
-    [handleMessage, send, teardown],
+    [openSession],
   );
+
+  // Release the camera and the peer connection if the page navigates away.
+  useEffect(() => teardown, [teardown]);
+
+  // Which controls make sense depends on what the machine actually gave us.
+  const hasVideo = (localStream?.getVideoTracks().length ?? 0) > 0;
+  const hasAudio = (localStream?.getAudioTracks().length ?? 0) > 0;
 
   const toggleMic = useCallback(() => {
     const next = !micEnabled;
@@ -297,13 +407,6 @@ export function useCall() {
     setCamEnabled(next);
   }, [camEnabled]);
 
-  // Release the camera and the peer connection if the page navigates away.
-  useEffect(() => teardown, [teardown]);
-
-  // Which controls make sense depends on what the machine actually gave us.
-  const hasVideo = (localStream?.getVideoTracks().length ?? 0) > 0;
-  const hasAudio = (localStream?.getAudioTracks().length ?? 0) > 0;
-
   /** A participant that has not identified itself yet still needs a label. */
   const nameFor = useCallback((id: string) => names[id] || fallbackName(id), [names]);
 
@@ -311,6 +414,7 @@ export function useCall() {
     status,
     error,
     notice,
+    attempt,
     room,
     myName,
     nameFor,
@@ -325,6 +429,13 @@ export function useCall() {
     toggleMic,
     toggleCam,
   };
+}
+
+/** Whether this tab was told to refuse direct connections; see the TURN section of the README. */
+function relayOnly() {
+  if (typeof window === "undefined") return false;
+
+  return new URLSearchParams(window.location.search).get("relay") === "1";
 }
 
 /**

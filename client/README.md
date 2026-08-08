@@ -46,6 +46,32 @@ would lose the room on the next reload.
 Nothing about a room exists on the server until someone is in it, so a link works before the room
 does; the first person through it creates the room by joining.
 
+### Losing the connection
+
+A dropped signaling socket is a stall, not an ejection. The call view stays up,
+the camera is never released, and the session is reopened with a backoff of 1, 2, 4, 8
+and then 10 seconds, indefinitely — a lift or a tunnel is worth waiting out, and Leave is
+always there. Regaining the network fires the `online` event, which retries immediately
+instead of sitting out the remaining backoff.
+
+Three different failures land on the same path, because all three mean the session is
+unusable: the socket closing, the peer connection reaching `failed` while the socket is
+fine, and a signaling frame that could not be applied.
+
+The server keeps no session to resume, so reconnecting is really rejoining: a new
+participant id, a new peer connection, fresh TURN credentials, and the display name sent
+again. Other participants see that as a leave and a join, so the tile blinks. Worse, a
+participant whose network vanished without closing its socket lingers on the server until
+the keepalive gives up on it, up to 60 seconds — during which the room shows a ghost. Both
+are the price of the server holding no session state.
+
+### Forcing the relay
+
+`?relay=1` on any URL sets `iceTransportPolicy: "relay"`, so the browser refuses every
+direct candidate and the call can only be carried by TURN. It is the only honest way to
+test a relay: with a direct path available, one is never used, and a working call says
+nothing about whether TURN works. See the TURN section of `../server/README.md`.
+
 ### Configuration
 
 `NEXT_PUBLIC_*` values are inlined into the client bundle **at build time**, so in a

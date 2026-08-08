@@ -507,6 +507,96 @@ func TestTwoParticipantsExchangeMedia(t *testing.T) {
 	}
 }
 
+// deployedTestServer builds the hub the way the container does: one shared UDP
+// mux for every peer connection, plus a 1:1 NAT mapping. testServer covers
+// neither, and that gap is not academic — it is exactly where the loopback
+// candidate bug lived, invisible to every other test while no call worked at all.
+//
+// Returns the ws:// base URL, or skips when the machine cannot host it.
+func deployedTestServer(t *testing.T) string {
+	t.Helper()
+
+	gin.SetMode(gin.TestMode)
+
+	// Whatever pion binds first is the socket its agents register with, so the
+	// mapping has to name that address for any of this to be reachable from here.
+	// This mirrors the container, where the only interface is the one Docker gave it.
+	peek, err := newICEUDPMux(0, "203.0.113.1")
+	if err != nil {
+		t.Skipf("no usable interface for a mapped UDP mux: %v", err)
+	}
+	addresses := peek.GetListenAddresses()
+	_ = peek.Close()
+
+	if len(addresses) == 0 {
+		t.Skip("no non-loopback interface to map")
+	}
+	first, ok := addresses[0].(*net.UDPAddr)
+	if !ok {
+		t.Fatalf("listen address is %T, want *net.UDPAddr", addresses[0])
+	}
+
+	port := freeUDPPort(t)
+	sfu, err := NewSFU(Config{UDPPort: port, NATIP: first.IP.String()})
+	if err != nil {
+		t.Fatalf("NewSFU: %v", err)
+	}
+
+	r := gin.New()
+	r.GET("/ws/:room", NewHub(sfu, func(*http.Request) bool { return true }).ServeWS)
+
+	server := httptest.NewServer(r)
+	t.Cleanup(server.Close)
+
+	t.Logf("media on udp/%d, host candidates mapped to %s", port, first.IP)
+
+	return "ws" + strings.TrimPrefix(server.URL, "http")
+}
+
+// freeUDPPort asks the kernel for an unused port. The mux needs a fixed one, and
+// hardcoding it would collide with whatever else the machine is running.
+func freeUDPPort(t *testing.T) int {
+	t.Helper()
+
+	conn, err := net.ListenUDP("udp", &net.UDPAddr{})
+	if err != nil {
+		t.Fatalf("find a free udp port: %v", err)
+	}
+	defer conn.Close()
+
+	return conn.LocalAddr().(*net.UDPAddr).Port
+}
+
+// TestDeployedConfigurationExchangesMedia runs the ordinary two-participant case
+// against the configuration the deployment actually uses. The other media tests
+// build the SFU with an ephemeral port per connection and no address mapping, so
+// a fault in either would sail past them and fail only in production.
+func TestDeployedConfigurationExchangesMedia(t *testing.T) {
+	baseURL := deployedTestServer(t)
+
+	alice := newTestClient(t, baseURL, "deployed")
+	<-alice.welcomed
+	alice.publish(t)
+
+	// Join second, so the server has to renegotiate an established peer.
+	bob := newTestClient(t, baseURL, "deployed")
+	<-bob.welcomed
+	bob.publish(t)
+
+	waitFor(t, 30*time.Second, "alice to receive bob's audio and video", func() bool {
+		return alice.packets(bob.id+"/audio") > 0 && alice.packets(bob.id+"/video") > 0
+	})
+	waitFor(t, 30*time.Second, "bob to receive alice's audio and video", func() bool {
+		return bob.packets(alice.id+"/audio") > 0 && bob.packets(alice.id+"/video") > 0
+	})
+
+	// The reported symptom of the mux bug was the first participant dying the
+	// moment the second arrived, so assert the connection and not just the media.
+	if state := alice.pc.ConnectionState(); state != webrtc.PeerConnectionStateConnected {
+		t.Errorf("alice's connection is %s after bob joined, want connected", state)
+	}
+}
+
 // TestThirdParticipantJoins covers renegotiating two established peers at once.
 func TestThirdParticipantJoins(t *testing.T) {
 	baseURL := testServer(t)

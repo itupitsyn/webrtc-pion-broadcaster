@@ -20,6 +20,7 @@ export function Call({ initialRoom }: CallProps) {
     status,
     error,
     notice,
+    attempt,
     room,
     myName,
     nameFor,
@@ -54,8 +55,9 @@ export function Call({ initialRoom }: CallProps) {
       return;
     }
 
-    const path = room ? roomPath(room) : "/";
-    if (window.location.pathname !== path) {
+    // The query string carries options like ?relay=1 and must survive this.
+    const path = (room ? roomPath(room) : "/") + window.location.search;
+    if (window.location.pathname + window.location.search !== path) {
       window.history.replaceState(null, "", path);
     }
   }, [room]);
@@ -77,6 +79,17 @@ export function Call({ initialRoom }: CallProps) {
         </p>
       )}
 
+      {status === "reconnecting" && (
+        <p
+          role="status"
+          className="w-full rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:bg-amber-950/60 dark:text-amber-200"
+        >
+          Connection lost — reconnecting{attempt > 1 ? ` (attempt ${attempt})` : ""}…
+          {/* Past a few tries this is not a blip, and the reason is worth naming. */}
+          {attempt >= 3 && " Check the network; a call across a restrictive one needs a TURN server."}
+        </p>
+      )}
+
       {!inCall && <JoinForm busy={status === "connecting"} initialRoom={initialRoom} onJoin={join} />}
 
       {inCall && (
@@ -85,9 +98,10 @@ export function Call({ initialRoom }: CallProps) {
             <div>
               <h2 className="text-lg font-semibold text-gray-900 dark:text-white">{room}</h2>
               <p className="text-sm text-gray-500 dark:text-gray-400">
-                {status === "connected"
-                  ? `${remotes.length + 1} ${remotes.length === 0 ? "participant" : "participants"}`
-                  : "Connecting…"}
+                {status === "connected" &&
+                  `${remotes.length + 1} ${remotes.length === 0 ? "participant" : "participants"}`}
+                {status === "reconnecting" && "Reconnecting…"}
+                {status !== "connected" && status !== "reconnecting" && "Connecting…"}
               </p>
             </div>
 

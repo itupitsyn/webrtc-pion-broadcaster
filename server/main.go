@@ -36,6 +36,13 @@ func main() {
 	}
 	if *turnURL == "" {
 		log.Print("warning: no TURN configured, so participants behind symmetric NAT will fail to connect")
+	} else {
+		// Worth stating positively: whether the relay is actually reaching browsers
+		// is otherwise invisible until someone cannot connect.
+		log.Printf("offering TURN %s to clients, credentials valid for %s", *turnURL, turnCredentialTTL)
+	}
+	if *stunURL != "" {
+		log.Printf("offering STUN %s to clients", *stunURL)
 	}
 
 	natIP, err := resolvePublicAddress(*publicAddress)

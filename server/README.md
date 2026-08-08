@@ -159,11 +159,44 @@ the LAN address is the blunt version, and then only LAN clients can connect.
 
 ### TURN
 
-Optional; see "start without a relay" above. When enabled, coturn runs in
-`use-auth-secret` mode: the SFU derives a username and password from the shared
-secret for each participant and sends them in the `welcome` frame. They expire on
-their own, so a leaked frame is not a permanent relay account, and there are no
-per-user accounts to manage.
+When enabled, coturn runs in `use-auth-secret` mode: the SFU derives a username
+and password from the shared secret for each participant and sends them in the
+`welcome` frame. They expire on their own, so a leaked frame is not a permanent
+relay account, and there are no per-user accounts to manage. The secret itself
+never leaves the server.
+
+```bash
+# .env
+TURN_DOMAIN=turn.example.com
+STUN_URL=stun:turn.example.com:3478
+TURN_URL=turn:turn.example.com:3478
+TURN_SECRET=$(openssl rand -hex 32)
+TURN_EXTERNAL_IP=203.0.113.10        # or <public>/<private> behind NAT
+
+docker compose --profile turn up -d
+```
+
+The startup log states what browsers are being offered — `offering TURN … to
+clients` — so a missing relay is visible before a user reports it rather than
+after.
+
+#### Proving it actually relays
+
+This is the part usually skipped, and it is why broken TURN goes unnoticed for
+months: as long as a direct path exists, the relay is never used, so a working
+call proves nothing. Open the app with `?relay=1`:
+
+```
+https://call.example.com/r/standup?relay=1
+```
+
+That sets `iceTransportPolicy: "relay"` in the browser, which refuses every
+direct candidate. If the call still connects, the relay works. If it does not,
+TURN is broken — and you have found out on your own terms rather than through
+the one participant whose office blocks UDP.
+
+Both sides do not need the flag; one is enough to force traffic through the relay
+in that direction.
 
 TLS for TURN (`turns:` on 5349) is not wired up — it needs certificates coturn can
 read, which Traefik's ACME storage does not expose directly. Plain 3478 over UDP
@@ -178,6 +211,12 @@ go test .
 
 The tests drive the SFU with pion peers acting as browsers and assert that RTP actually crosses
 between them, including the three-participant case and the teardown when someone leaves.
+
+Most of them build the SFU with an ephemeral media port and no address mapping, which is convenient
+and nothing like the deployment. `TestDeployedConfigurationExchangesMedia` covers the real thing —
+one shared UDP mux plus 1:1 NAT — because a fault reachable only through that combination sails past
+every other test and then fails every call in production. That is not hypothetical: it is exactly
+what the loopback candidate bug did.
 
 ## Design
 
