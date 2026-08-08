@@ -198,6 +198,29 @@ the one participant whose office blocks UDP.
 Both sides do not need the flag; one is enough to force traffic through the relay
 in that direction.
 
+#### Knowing whether anyone actually needs it
+
+`?relay=1` answers "can the relay work". It does not answer "is it working for
+real users", and the connection log alone cannot either — a participant that
+connected directly and one that was relayed both read as `connection connected`.
+So every participant's chosen route is logged as soon as ICE settles, and again
+if it changes mid-call:
+
+```
+room "standup": 3f2a…: media direct  (remote srflx 203.0.113.7:51957)
+room "standup": 9b41…: media relayed (remote relay 198.51.100.4:49164)
+```
+
+```bash
+docker logs webrtc-sfu | grep -c "media relayed"   # how many needed the relay
+docker logs webrtc-sfu | grep -c "media direct"
+```
+
+Two things this catches that nothing else does: a relay that has quietly stopped
+working (the relayed count drops to zero and stays there), and a deployment where
+the relay is carrying everyone — which means direct connectivity is broken and
+every call is paying for a detour it should not need.
+
 TLS for TURN (`turns:` on 5349) is not wired up — it needs certificates coturn can
 read, which Traefik's ACME storage does not expose directly. Plain 3478 over UDP
 and TCP covers everything except networks that inspect or block non-TLS traffic on

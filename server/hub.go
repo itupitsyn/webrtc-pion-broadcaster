@@ -119,6 +119,26 @@ func (h *Hub) ServeWS(c *gin.Context) {
 		}
 	})
 
+	// How a participant's media actually reaches us is otherwise invisible: the
+	// log says connected either way, so a TURN server carrying half the calls and
+	// one that quietly stopped working look identical. Fires again if the route
+	// changes mid-call.
+	if ice := pc.SCTP().Transport().ICETransport(); ice != nil {
+		ice.OnSelectedCandidatePairChange(func(pair *webrtc.ICECandidatePair) {
+			if pair == nil || pair.Local == nil || pair.Remote == nil {
+				return
+			}
+
+			route := "direct"
+			if pair.Local.Typ == webrtc.ICECandidateTypeRelay || pair.Remote.Typ == webrtc.ICECandidateTypeRelay {
+				route = "relayed"
+			}
+
+			log.Printf("room %q: %s: media %s (remote %s %s:%d)",
+				name, p.id, route, pair.Remote.Typ, pair.Remote.Address, pair.Remote.Port)
+		})
+	}
+
 	pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
 		log.Printf("room %q: %s: connection %s", name, p.id, state)
 
