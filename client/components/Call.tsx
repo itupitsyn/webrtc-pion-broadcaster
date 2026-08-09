@@ -1,7 +1,9 @@
 "use client";
 
+import { devicesOfKind } from "@/lib/devices";
 import { useCall } from "@/lib/useCall";
 import { useEffect, useRef, useState } from "react";
+import { DeviceSettings } from "./DeviceSettings";
 import { JoinForm } from "./JoinForm";
 import { VideoTile } from "./VideoTile";
 
@@ -24,19 +26,28 @@ export function Call({ initialRoom }: CallProps) {
     room,
     myName,
     nameFor,
+    mediaFor,
     localStream,
     remotes,
     micEnabled,
     camEnabled,
-    hasVideo,
     hasAudio,
+    switching,
+    devices,
+    available,
     join,
     leave,
     toggleMic,
     toggleCam,
+    selectDevice,
   } = useCall();
 
   const inCall = localStream !== null;
+  const [showSettings, setShowSettings] = useState(false);
+
+  // A machine with no camera at all has nothing to switch on; one whose camera is
+  // currently on plainly does, even before the device list has come back.
+  const hasCamera = camEnabled || devicesOfKind(available, "videoinput").length > 0;
 
   // Whether this tab has been in a call, which is what separates "left the room"
   // from "arrived through a link and has not joined yet".
@@ -109,9 +120,22 @@ export function Call({ initialRoom }: CallProps) {
               <CopyLinkButton />
               {/* A control for a device we never got would do nothing. */}
               {hasAudio && <ToggleButton active={micEnabled} onClick={toggleMic} onLabel="Mute" offLabel="Unmute" />}
-              {hasVideo && (
-                <ToggleButton active={camEnabled} onClick={toggleCam} onLabel="Stop video" offLabel="Start video" />
+              {hasCamera && (
+                <ToggleButton
+                  active={camEnabled}
+                  onClick={toggleCam}
+                  // Reopening the camera takes long enough to click twice.
+                  disabled={switching}
+                  onLabel="Stop video"
+                  offLabel={switching ? "Starting…" : "Start video"}
+                />
               )}
+              <ToggleButton
+                active={!showSettings}
+                onClick={() => setShowSettings((open) => !open)}
+                onLabel="Devices"
+                offLabel="Hide devices"
+              />
               <button
                 onClick={leave}
                 className="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-red-700"
@@ -121,10 +145,27 @@ export function Call({ initialRoom }: CallProps) {
             </div>
           </header>
 
+          {showSettings && (
+            <DeviceSettings available={available} selected={devices} busy={switching} onSelect={selectDevice} />
+          )}
+
           <div className="grid w-full gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            <VideoTile stream={localStream} label={myName ? `${myName} (you)` : "You"} muted videoOff={!camEnabled} />
+            <VideoTile
+              stream={localStream}
+              label={myName ? `${myName} (you)` : "You"}
+              muted
+              videoOff={!camEnabled}
+              micOff={hasAudio && !micEnabled}
+            />
             {remotes.map((peer) => (
-              <VideoTile key={peer.id} stream={peer.stream} label={nameFor(peer.id)} />
+              <VideoTile
+                key={peer.id}
+                stream={peer.stream}
+                label={nameFor(peer.id)}
+                videoOff={!mediaFor(peer.id).video}
+                micOff={!mediaFor(peer.id).audio}
+                sinkId={devices.speaker}
+              />
             ))}
           </div>
 
@@ -188,14 +229,16 @@ interface ToggleButtonProps {
   onClick: () => void;
   onLabel: string;
   offLabel: string;
+  disabled?: boolean;
 }
 
-function ToggleButton({ active, onClick, onLabel, offLabel }: ToggleButtonProps) {
+function ToggleButton({ active, onClick, onLabel, offLabel, disabled = false }: ToggleButtonProps) {
   return (
     <button
       onClick={onClick}
+      disabled={disabled}
       aria-pressed={!active}
-      className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-800 transition hover:bg-gray-100 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
+      className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-800 transition hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
     >
       {active ? onLabel : offLabel}
     </button>

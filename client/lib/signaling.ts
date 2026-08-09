@@ -1,16 +1,28 @@
 /** Signaling protocol shared with the Go SFU. */
 
-export type SignalEvent = "welcome" | "offer" | "answer" | "candidate" | "error" | "identify" | "peers";
+export type SignalEvent =
+  "welcome" | "offer" | "answer" | "candidate" | "error" | "identify" | "peers" | "media" | "renegotiate";
 
 export interface SignalMessage {
   event: SignalEvent;
   data?: unknown;
 }
 
+/** What a participant reports about its own microphone and camera. */
+export interface MediaState {
+  audio: boolean;
+  video: boolean;
+}
+
+export const SENDING_EVERYTHING: MediaState = { audio: true, video: true };
+
 /** One entry of the room roster. `name` is absent until that peer identifies itself. */
 export interface PeerInfo {
   id: string;
   name?: string;
+  /** What that peer says it is sending. Absent from an older server. */
+  audio?: boolean;
+  video?: boolean;
 }
 
 /** Matches the server's cap; longer names are trimmed there anyway. */

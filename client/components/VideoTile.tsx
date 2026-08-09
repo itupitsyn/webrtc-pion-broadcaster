@@ -7,14 +7,25 @@ interface VideoTileProps {
   label: string;
   /** Always mute the local preview, otherwise the microphone feeds back. */
   muted?: boolean;
-  /** Local camera switched off by the user; the track is live but sends nothing. */
+  /** Camera switched off at the sending end, so whatever arrived last is stale. */
   videoOff?: boolean;
+  /** Microphone muted at the sending end. */
+  micOff?: boolean;
+  /** Output device to play through; empty means the system default. */
+  sinkId?: string;
 }
 
 /** Slider maximum, in percent. Past 100 the element cannot help and WebAudio takes over. */
 const MAX_LEVEL = 2;
 
-export function VideoTile({ stream, label, muted = false, videoOff = false }: VideoTileProps) {
+export function VideoTile({
+  stream,
+  label,
+  muted = false,
+  videoOff = false,
+  micOff = false,
+  sinkId = "",
+}: VideoTileProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const hasVideo = useHasTrack(stream, "video");
   const hasAudio = useHasTrack(stream, "audio");
@@ -61,6 +72,20 @@ export function VideoTile({ stream, label, muted = false, videoOff = false }: Vi
     if (boostUnavailable) setLevel((current) => Math.min(current, 1));
   }, [boostUnavailable]);
 
+  // Both paths have to be redirected: the element plays everything up to 100%,
+  // and the boost graph plays the rest through the AudioContext, which routes
+  // entirely separately.
+  useEffect(() => {
+    routeAudioContext(sinkId);
+
+    const video = videoRef.current;
+    if (!video || !("setSinkId" in video)) return;
+
+    void video.setSinkId(sinkId).catch((sinkError: unknown) => {
+      console.error("could not switch output device", sinkError);
+    });
+  }, [sinkId]);
+
   const showPlaceholder = !hasVideo || videoOff;
   // The local preview plays nothing by design, and a participant who joined
   // without a microphone has nothing to turn down.
@@ -87,9 +112,10 @@ export function VideoTile({ stream, label, muted = false, videoOff = false }: Vi
         </div>
       )}
 
-      <span className="absolute bottom-2 left-2 rounded bg-black/60 px-2 py-0.5 text-xs font-medium text-white">
+      <span className="absolute bottom-2 left-2 flex items-center gap-1 rounded bg-black/60 px-2 py-0.5 text-xs font-medium text-white">
+        {micOff && <MicOffIcon />}
         {label}
-        {!hasVideo && " · no camera"}
+        {videoOff ? " · camera off" : !hasVideo && " · no camera"}
       </span>
 
       {showVolume && (
@@ -210,18 +236,61 @@ function useAudioBoost(stream: MediaStream) {
 
 let sharedContext: AudioContext | null = null;
 
+/** The chosen output device, remembered for a context that does not exist yet. */
+let preferredSink = "";
+
+/** An AudioContext that can be pointed at an output device; not every browser's can. */
+type RoutableAudioContext = AudioContext & { setSinkId(id: string): Promise<void> };
+
+/**
+ * Sends the boost graph to the chosen output device. Stored either way: the
+ * context is built lazily on the first boost, which is usually long after the
+ * device was picked.
+ */
+function routeAudioContext(sinkId: string) {
+  preferredSink = sinkId;
+
+  if (!sharedContext || !("setSinkId" in sharedContext)) return;
+
+  void (sharedContext as RoutableAudioContext).setSinkId(sinkId).catch((error: unknown) => {
+    console.error("could not route boosted audio", error);
+  });
+}
+
 /**
  * One AudioContext for the page. Browsers cap how many a document may hold, and
  * a room with several participants would otherwise want one per tile.
  */
 function audioContext(): AudioContext {
-  sharedContext ??= new AudioContext();
+  if (!sharedContext) {
+    sharedContext = new AudioContext();
+    routeAudioContext(preferredSink);
+  }
 
   // The autoplay policy starts a context suspended unless a gesture created it.
   // Every call here comes from the slider, which is one.
   if (sharedContext.state === "suspended") void sharedContext.resume();
 
   return sharedContext;
+}
+
+/** Marks a participant whose microphone is muted at their end. */
+function MicOffIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      role="img"
+      aria-label="Microphone muted"
+      className="size-3.5 shrink-0 text-red-300"
+    >
+      <path strokeLinecap="round" strokeLinejoin="round" d="M9 9V5a3 3 0 0 1 6 0v4m0 3a3 3 0 0 1-4.5 2.6" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M19 11a7 7 0 0 1-10.9 5.8M5 11a7 7 0 0 0 2 4.9M12 19v3" />
+      <path strokeLinecap="round" d="M3 3l18 18" />
+    </svg>
+  );
 }
 
 function SpeakerIcon({ muted }: { muted: boolean }) {

@@ -242,6 +242,21 @@ func (h *Hub) readLoop(room *Room, p *participant) {
 			p.setName(sanitizeName(ident.Name))
 			go room.broadcastRoster()
 
+		case eventMedia:
+			var state mediaState
+			if err := json.Unmarshal(msg.Data, &state); err != nil {
+				p.ws.writeError("malformed media")
+				continue
+			}
+
+			p.setMedia(state)
+			go room.broadcastRoster()
+
+		case eventRenegotiate:
+			// Async: reoffer waits for the peer to be stable, and this loop is
+			// what receives the answer that gets it there.
+			go room.reoffer(p)
+
 		case eventCandidate:
 			var candidate webrtc.ICECandidateInit
 			if err := json.Unmarshal(msg.Data, &candidate); err != nil {

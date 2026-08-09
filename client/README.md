@@ -96,11 +96,52 @@ one place to change them.
 Asking for a camera and a microphone together fails outright with `NotFoundError` when either one is
 missing — a desktop with no webcam gets nothing, not just no video. So `acquireMedia` in
 `lib/useCall.ts` falls back: camera + mic, then mic only, then camera only. You join with whatever
-the machine has, a notice explains what was dropped, and controls for a device you never got are
-hidden. A denied permission is not retried, since asking for less will not change it.
+the machine has, a notice explains what was dropped, and controls for a device the machine does not
+have are hidden. A denied permission is not retried, since asking for less will not change it.
+
+The camera control is the exception: it appears whenever the machine lists a camera, even if joining
+without one is how you got here — a webcam that was busy at join time is worth another try, and one
+plugged in mid-call should be usable without rejoining.
 
 Participants with no camera show a placeholder tile and are still heard; their `<video>` element
 stays mounted because that is what plays their audio.
+
+### Choosing devices
+
+The **Devices** button opens a picker for camera, microphone and speakers. The choice is remembered in
+`localStorage` and reused on the next join — as a preference, not a requirement: device ids do not
+survive a webcam being unplugged, and a stale one must never be the reason a call cannot start.
+
+The menu only appears once you are in a call. Before permission is granted `enumerateDevices` returns
+entries with no label and no id, so there would be nothing to pick from.
+
+Switching camera or microphone mid-call is `replaceTrack` on the sender that is already there: what
+is sent changes without renegotiating, and nobody else's connection notices. Switches are serialized —
+opening a device takes long enough to click again, and two overlapping ones race over the same sender.
+
+Speakers are different. `setSinkId` is applied locally to each remote tile and never signalled, and
+only Chromium supports it; elsewhere the control is replaced by a line saying so rather than shown
+broken. Both output paths have to be redirected, because the boost graph above plays through the
+`AudioContext`, which routes entirely separately from the elements.
+
+### Turning video off
+
+**Stop video** releases the camera rather than setting `enabled = false`. Disabling a track keeps the
+device open, its light on, and black frames going out — which is not what someone turning their camera
+off is asking for. The cost is that switching back on reopens the device, which takes a moment and
+can fail; the button says `Starting…` while it does.
+
+Releasing it stops RTP without ending anything, so everyone else would sit on the last frame that
+arrived. Participants therefore report their own state over the `media` event and the server relays it
+in the roster, which is what puts a placeholder and a `· camera off` label on the tile instead of a
+stale picture. A muted microphone is reported the same way and shows as a struck-through mic.
+
+Turning a camera on that was never there at join time is the one case `replaceTrack` cannot serve: no
+sender exists, and that m-line was negotiated inactive. The track is attached with `addTrack` and the
+server is asked to re-offer.
+
+Muting the microphone stays `enabled = false`. Unmuting has to be instant, and silence carries no
+stale-frame problem.
 
 ### Per-participant volume
 
@@ -158,8 +199,10 @@ browser                                  SFU
 ```
 
 - `lib/signaling.ts` — protocol types and the websocket URL.
-- `lib/useCall.ts` — one participant's peer connection and signaling loop.
+- `lib/useCall.ts` — one participant's peer connection, signaling loop and local devices.
+- `lib/devices.ts` — the device list, the remembered choice, and what the browser supports.
 - `components/Call.tsx` — join form, video grid, mute and camera controls.
+- `components/DeviceSettings.tsx` — the camera, microphone and speaker pickers.
 
 Signaling frames are applied one at a time. A renegotiation offer can arrive while the previous one
 is still being answered, and applying both concurrently corrupts the negotiation.

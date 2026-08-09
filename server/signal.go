@@ -24,6 +24,15 @@ const (
 	// resulting roster back to everyone in the room.
 	eventIdentify = "identify"
 	eventPeers    = "peers"
+
+	// media is a participant reporting whether its microphone and camera are
+	// currently sending, relayed to the room through the roster.
+	eventMedia = "media"
+
+	// renegotiate is a participant asking for a fresh offer. Needed after the
+	// browser attaches a track to an m-line that was negotiated inactive: only
+	// the server offers, so the browser cannot revive it by itself.
+	eventRenegotiate = "renegotiate"
 )
 
 // maxNameLength bounds a display name so one participant cannot wreck everyone
@@ -56,11 +65,26 @@ type identify struct {
 	Name string `json:"name"`
 }
 
+// mediaState is what a participant reports about its own devices. Both default
+// to true, so a participant that never reports is taken to be sending whatever
+// it negotiated.
+//
+// This is a claim, not an observation: the server forwards RTP without looking
+// at it, and a stopped camera is indistinguishable from a stalled one down at
+// that level. It exists so the other browsers can show a placeholder instead of
+// the last frame that happened to arrive.
+type mediaState struct {
+	Audio bool `json:"audio"`
+	Video bool `json:"video"`
+}
+
 // peerInfo is one entry of the roster. Name is empty until that participant has
 // identified itself, and the browser falls back to a generated label.
 type peerInfo struct {
-	ID   string `json:"id"`
-	Name string `json:"name,omitempty"`
+	ID    string `json:"id"`
+	Name  string `json:"name,omitempty"`
+	Audio bool   `json:"audio"`
+	Video bool   `json:"video"`
 }
 
 // sanitizeName trims a display name to something safe to render and log. React

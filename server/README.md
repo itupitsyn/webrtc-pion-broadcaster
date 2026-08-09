@@ -272,6 +272,19 @@ Two things are easy to get wrong and are worth not undoing:
   until a keyframe arrives, and pion does not relay a subscriber's PLI across peer connections. The
   server asks the publisher for one when a subscription is added, and relays PLI/FIR after that.
 
+### Devices and muting
+
+Two client-side decisions reach into the server. A participant that turns its camera off releases the
+device rather than blanking it, which stops RTP without ending anything — subscribers would otherwise
+sit on the last frame that arrived. So participants report their own state over the `media` event and
+the server relays it in the roster. It is a claim, not an observation: forwarded RTP says nothing
+about why it stopped, and the server never inspects it.
+
+And a participant that joined without a camera has that m-line negotiated inactive, which
+`replaceTrack` cannot revive. The browser attaches a track and sends `renegotiate`; `Room.reoffer`
+offers that participant unconditionally, because nothing in the room's own track list changed and
+`signal()` would send nothing.
+
 ## Layout
 
 | File               | Contents                                                        |

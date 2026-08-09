@@ -23,31 +23,49 @@ type participant struct {
 	pending      []webrtc.ICECandidateInit
 
 	// Set from the read loop, read whenever the roster is broadcast.
-	nameMu sync.Mutex
-	name   string
+	stateMu sync.Mutex
+	name    string
+	media   mediaState
 
 	closeOnce sync.Once
 	done      chan struct{}
 }
 
 func (p *participant) setName(name string) {
-	p.nameMu.Lock()
-	defer p.nameMu.Unlock()
+	p.stateMu.Lock()
+	defer p.stateMu.Unlock()
 
 	p.name = name
 }
 
-// displayName is empty until the participant has identified itself; the browser
-// falls back to a generated label until then.
-func (p *participant) displayName() string {
-	p.nameMu.Lock()
-	defer p.nameMu.Unlock()
+// setMedia records what the participant says its microphone and camera are
+// doing. Nothing on the server depends on it; it exists to be relayed.
+func (p *participant) setMedia(state mediaState) {
+	p.stateMu.Lock()
+	defer p.stateMu.Unlock()
 
-	return p.name
+	p.media = state
+}
+
+// info is this participant's roster entry. Name is empty until it has
+// identified itself, and the browser falls back to a generated label.
+func (p *participant) info() peerInfo {
+	p.stateMu.Lock()
+	defer p.stateMu.Unlock()
+
+	return peerInfo{ID: p.id, Name: p.name, Audio: p.media.Audio, Video: p.media.Video}
 }
 
 func newParticipant(id string, pc *webrtc.PeerConnection, ws *wsConn) *participant {
-	return &participant{id: id, pc: pc, ws: ws, done: make(chan struct{})}
+	return &participant{
+		id: id,
+		pc: pc,
+		ws: ws,
+		// Assumed sending until told otherwise: a participant is only ever
+		// announced to the room once it has media to announce.
+		media: mediaState{Audio: true, Video: true},
+		done:  make(chan struct{}),
+	}
 }
 
 // setRemoteDescription applies the browser's answer and flushes any candidates

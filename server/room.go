@@ -74,15 +74,16 @@ func (r *Room) join(p *participant) {
 	go r.broadcastRoster()
 }
 
-// broadcastRoster tells everyone who else is in the room. It runs on every join
-// and leave, and again whenever someone identifies itself, since names arrive
-// after the connection is already up.
+// broadcastRoster tells everyone who else is in the room, and what each of them
+// says its microphone and camera are doing. It runs on every join and leave, and
+// again whenever someone identifies itself or mutes something, since all of that
+// arrives after the connection is already up.
 func (r *Room) broadcastRoster() {
 	r.mu.Lock()
 	roster := make([]peerInfo, 0, len(r.participants))
 	targets := make([]*participant, 0, len(r.participants))
 	for _, p := range r.participants {
-		roster = append(roster, peerInfo{ID: p.id, Name: p.displayName()})
+		roster = append(roster, p.info())
 		targets = append(targets, p)
 	}
 	r.mu.Unlock()
@@ -223,6 +224,41 @@ func (r *Room) signal() {
 	}
 
 	log.Printf("room %q: renegotiation did not settle after %d attempts", r.name, signalAttempts)
+}
+
+// reoffer sends p a fresh offer whether or not its track set changed.
+//
+// A browser turning its camera back on has to attach a track to an m-line that
+// was negotiated inactive, and replaceTrack cannot revive one — that needs an
+// offer, and the server is the only side that offers. Nothing in the room's own
+// state changed, so signal() would look at p, see the same senders as before,
+// and send nothing.
+func (r *Room) reoffer(p *participant) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for range signalAttempts {
+		if p.pc.ConnectionState() == webrtc.PeerConnectionStateClosed {
+			return
+		}
+
+		if p.pc.SignalingState() == webrtc.SignalingStateStable {
+			if err := r.offerLocked(p); err != nil {
+				log.Printf("room %q: %s: reoffer: %v", r.name, p.id, err)
+			}
+
+			return
+		}
+
+		// Mid-negotiation. That offer may well be the one this request is chasing,
+		// but it was built before the browser attached its track, so wait it out
+		// rather than assume.
+		r.mu.Unlock()
+		time.Sleep(signalBackoff)
+		r.mu.Lock()
+	}
+
+	log.Printf("room %q: %s: reoffer did not settle after %d attempts", r.name, p.id, signalAttempts)
 }
 
 // syncLocked brings every participant up to date and reports whether the room is
